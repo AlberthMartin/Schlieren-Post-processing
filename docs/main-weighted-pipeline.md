@@ -11,7 +11,7 @@ The script imports helper functions from:
 - `GUI_functions.py` for selecting/reusing the spray origin and manual
   validation drawing.
 - `functions_videos.py` for `.cine` loading.
-- `videoProcessingFunctions.py` for rotation, cropping, CLAHE, masks, and nozzle
+- `videoProcessingFunctions.py` for rotation, cropping, CLAHE, and nozzle
   timing helpers.
 - `opticalFlow.py` for Farneback optical-flow magnitude.
 - `clustering.py` for mask cleanup and outline overlays.
@@ -117,20 +117,7 @@ video_strip2 = video_strip.copy()
 Then `vpf.applyCLAHE(video_strip)` applies contrast-limited adaptive histogram
 equalization to every frame in place.
 
-## 8. Create Background Mask
-
-`vpf.createBackgroundMask(first_frame, threshold=20)` creates a binary mask from
-the first active frame:
-
-```text
-first_frame > 20 => 255
-otherwise        => 0
-```
-
-The script displays this mask in an OpenCV window and waits for a key press. In
-later thresholding, pixels where this background mask is `0` are excluded.
-
-## 9. Compute Optical-flow Magnitude
+## 8. Compute Optical-flow Magnitude
 
 The pipeline has two control switches:
 
@@ -156,7 +143,7 @@ only the magnitude array. Work is split across threads. Frames before
 If `use_intensity_only` is set to `True`, the code skips real optical flow and
 uses an all-ones magnitude array.
 
-## 10. Build Static Priors
+## 9. Build Static Priors
 
 The script prepares a cone prior based on the spray origin:
 
@@ -169,11 +156,12 @@ The script prepares a cone prior based on the spray origin:
 The cone is recomputed per frame by trimming the full cone to the previous
 frame's penetration plus `50` pixels, with a minimum length.
 
-The script also loads `mask.png` as a freehand mask. If missing, it prints a
-warning and uses an empty mask. During score combination, an empty freehand mask
-is treated as all ones so it does not suppress the result.
+The script also asks whether to reuse, edit, create, or skip `mask.png` as a
+freehand exclusion mask. White pixels in this mask are hard-excluded from the
+scoring path and final masks. The same saved `mask.png` can be reused for later
+files, or replaced by drawing a new one.
 
-## 11. Initialize Metric Arrays
+## 10. Initialize Metric Arrays
 
 The script allocates per-frame arrays for:
 
@@ -188,9 +176,10 @@ The script allocates per-frame arrays for:
 It also initializes a 100-pixel-radius circular ROI around the spray origin for
 detecting nozzle opening from motion.
 
-## 12. Per-frame Scoring Loop
+## 11. Per-frame Scoring Loop
 
-For every frame, the script calculates four normalized components.
+For every frame, the script calculates normalized intensity, motion, and cone
+components, then applies the manual exclusion mask.
 
 ### Intensity Score
 
@@ -205,6 +194,8 @@ intensity_gamma = 3.0
 With `use_cumulative_as_mask = True`, only pixels already in the cumulative
 motion mask may keep a nonzero intensity score.
 
+Pixels covered by the freehand exclusion mask are also forced to zero.
+
 ### Motion Score
 
 The optical-flow magnitude is clipped at:
@@ -215,6 +206,9 @@ mag_clip = 0.4
 
 and normalized to `[0, 1]`. Pixels above `0.99` in normalized magnitude are added
 to the cumulative mask.
+
+Excluded pixels are removed from both the per-frame motion score and the
+cumulative motion mask.
 
 ### Nozzle Opening Detection
 
@@ -237,7 +231,6 @@ The nominal weights are:
 ```python
 w_intensity = 0.4
 w_magnitude = 0.8
-w_freehand = 0.1
 w_cone = 0.6
 ```
 
@@ -256,23 +249,26 @@ geometric product:
 combined_score =
     (intensity + eps) ** norm_intensity *
     (motion + eps) ** norm_magnitude *
-    (freehand + eps) ** norm_freehand *
     (cone + eps) ** norm_cone
 ```
 
-The result is divided by its frame maximum when possible.
+The result is divided by its frame maximum when possible. Excluded pixels are
+then kept at zero.
 
-## 13. Threshold and Clean the Mask
+## 12. Threshold and Clean the Mask
 
 With `use_cumulative_as_mask = True` or `use_intensity_only = True`, the script
 uses Otsu thresholding on the combined score. Otherwise, it thresholds at
 `0.8 * peak`.
 
-Pixels outside the background mask are removed:
+Freehand-excluded pixels are removed:
 
 ```python
-threshold_mask[background_mask == 0] = 0
+threshold_mask[exclusion_mask_bool] = 0
 ```
+
+The same exclusion is applied again after cleanup, so hole-filling or blob
+selection cannot reintroduce blocked regions.
 
 For the current cumulative-mask path, cleanup is:
 
@@ -282,7 +278,7 @@ For the current cumulative-mask path, cleanup is:
 If cumulative-mask and intensity-only modes are disabled, the alternate cleanup
 path uses `create_cluster_mask(threshold_mask, cluster_distance=20, alpha=30)`.
 
-## 14. Boundary Geometry
+## 13. Boundary Geometry
 
 The final mask is converted to OpenCV contours. Contours are converted from
 OpenCV `(x, y)` format to `(row, col)` / `(y, x)` arrays for
@@ -301,7 +297,7 @@ Once nozzle opening has been detected, `calculate_boundary` returns:
 Cone angle calculations use boundary points whose distance from the nozzle is
 between `10%` and `60%` of the penetration distance.
 
-## 15. Area, Volume, and Intensity Metrics
+## 14. Area, Volume, and Intensity Metrics
 
 For each frame:
 
@@ -319,7 +315,7 @@ computes mean intensity inside the saved combined masks, smooths it with a
 `vpf.calculate_closing_point(...)` estimates nozzle closing from spray area and
 intensity heuristics. The area-derived candidate has the highest weight.
 
-## 16. Display and Save Overlay Video
+## 15. Display and Save Overlay Video
 
 The script creates:
 
@@ -336,7 +332,7 @@ For every frame, it displays a 3x3 diagnostic grid containing:
 - optical-flow magnitude
 - cumulative mask
 - cone mask
-- freehand mask
+- excluded areas
 - final overlay
 
 The overlay video itself contains the processed strip with the final mask
@@ -348,7 +344,7 @@ OpenCV controls:
 - `q`: quit display loop
 - `p`: pause until another key press
 
-## 17. Manual Validation
+## 16. Manual Validation
 
 After the overlay loop, the script opens a validation window on:
 
@@ -374,7 +370,7 @@ It writes validation images to the current working directory, not `Results/`:
 <input_basename>_comparison_frame_<frame>.png
 ```
 
-## 18. Plot and Export CSV
+## 17. Plot and Export CSV
 
 The script plots a 2x4 Matplotlib figure of:
 
@@ -394,4 +390,3 @@ Results/<input_basename>_spray_metrics.csv
 ```
 
 with one row per frame.
-

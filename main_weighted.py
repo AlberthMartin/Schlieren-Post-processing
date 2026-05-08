@@ -82,9 +82,6 @@ for file in all_files:
         video_strip = rotated_video
         nframes, height, width = video_strip.shape[:3]
 
-    first_frame = video_strip[firstFrameNumber]
-
-
     # # TESTING
     # TAGS_segmentation = np.zeros_like(video_strip, dtype=np.uint8)
     # TAGS_segmentation_diff = np.zeros_like(video_strip, dtype=np.float32)
@@ -96,11 +93,8 @@ for file in all_files:
     # bg_init_idx = max(0, firstFrameNumber-1)
     # tags_background = video_strip[bg_init_idx].copy()
 
-    # background_mask_test = vpf.createBackgroundMask(first_frame, threshold=20)
-
     # for i in range(nframes):
     #     current_frame = video_strip[i]
-    #     current_frame[background_mask_test == 0] = 0  # Apply background mask to current frame before segmentation
 
     #     tags_mask, tags_diff = vpf.tags_segmentation(current_frame, tags_background)
 
@@ -126,12 +120,6 @@ for file in all_files:
     video_strip2 = video_strip.copy()  # avoid modifying original rotated video for other processing
 
     video_strip = vpf.applyCLAHE(video_strip)
-
-    background_mask = vpf.createBackgroundMask(first_frame, threshold=20) # Threshold to remove chamber walls
-    cv2.imshow("Background Mask", background_mask) # Display background mask for verification, press any key to continue
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
-
 
     ##############################
     # Optical Flow Visualization
@@ -176,12 +164,11 @@ for file in all_files:
 
     # maybe if magnitude is close to zero then intensity should have more weight? not sure how to implement that nicely though.
 
-    # --- Combine per-pixel intensity, optical-flow magnitude, and freehand mask ---
+    # --- Combine per-pixel intensity and optical-flow magnitude, with manual exclusion mask ---
     # Parameters: weights (normalized internally) and binary threshold on combined score (0.0 - 1.0)
 
     w_intensity = 0.4   # weight for per-pixel light intensity
     w_magnitude = 0.8  # weight for optical flow magnitude
-    w_freehand = 0.1    # weight for freehand mask
     w_cone = 0.6    # weight for cone mask
     intensity_gamma = 3.0  # gamma correction for intensity score to amplify differences in dark areas, higher = more contrast
 
@@ -220,6 +207,19 @@ for file in all_files:
 
     cone_masks = np.zeros_like(video_strip, dtype=np.uint8)
 
+    # Load, reuse, or create a freehand exclusion mask.
+    # White pixels in mask.png are hard-excluded from scoring and final masks.
+    exclusion_mask = get_freehand_exclusion_mask(video_strip2, mask_path="mask.png")
+    if exclusion_mask.shape != (height, width):
+        exclusion_mask = cv2.resize(exclusion_mask, (width, height), interpolation=cv2.INTER_NEAREST)
+    exclusion_mask = ((exclusion_mask > 0).astype(np.uint8) * 255)
+    exclusion_mask_bool = exclusion_mask > 0
+    excluded_pixels = int(np.count_nonzero(exclusion_mask_bool))
+    if excluded_pixels > 0:
+        print(f"Using freehand exclusion mask from mask.png ({excluded_pixels} excluded pixels).")
+    else:
+        print("No freehand exclusion mask applied.")
+
     boundaries = []
     penetration = np.zeros(nframes, dtype=np.float32)
     cone_angle = np.zeros(nframes, dtype=np.float32)
@@ -232,23 +232,10 @@ for file in all_files:
     spray_area = np.zeros(nframes, dtype=np.float32)
     spray_volume = np.zeros(nframes, dtype=np.float32)
 
-    # Load freehand mask created earlier by the user (expects single-channel binary image "mask.png")
-    freehand_mask = cv2.imread("mask.png", cv2.IMREAD_GRAYSCALE)
-    if freehand_mask is None:
-        print("Warning: 'mask.png' not found — proceeding without freehand mask")
-        freehand_mask_f = np.zeros((height, width), dtype=np.float32)
-    else:
-        # Resize to match frames if necessary, keep nearest neighbour to preserve binary nature
-        if freehand_mask.shape != (height, width):
-            freehand_mask = cv2.resize(freehand_mask, (width, height), interpolation=cv2.INTER_NEAREST)
-        # Normalize to 0.0-1.0
-        freehand_mask_f = (freehand_mask > 0).astype(np.float32)
-
     # Normalize weights
-    total_w = w_intensity + w_magnitude + w_freehand + w_cone
+    total_w = w_intensity + w_magnitude + w_cone
     norm_intensity = w_intensity / total_w
     norm_magnitude = w_magnitude / total_w
-    norm_freehand = w_freehand / total_w
     norm_cone = w_cone / total_w
 
     eps = 1e-6 # small value to avoid division by zero
@@ -296,11 +283,13 @@ for file in all_files:
         # Restrict intensity score to areas within cumulative_mask
         if use_cumulative_as_mask:
             intensity_n[cumulative_mask == 0] = 0
+        intensity_n[exclusion_mask_bool] = 0
 
         intensity_scores[idx] = intensity_n
 
         # --- Optical flow magnitude: cap at mag_clip then normalize to 0..1 (values >= mag_clip -> 1) ---
         mag = mag_array[idx].astype(np.float32)
+        mag[exclusion_mask_bool] = 0
         mag_clip = 0.4  # absolute motion cutoff: anything higher considered motion and mapped to 1.0
         mag_clipped = np.clip(mag, 0.0, mag_clip)
         mag_n = mag_clipped / (mag_clip + eps)
@@ -309,7 +298,9 @@ for file in all_files:
 
         # Accumulate areas with mag_n == 1.0
         new_areas = (mag_n > 0.99).astype(np.uint8) * 255
+        new_areas[exclusion_mask_bool] = 0
         cumulative_mask = np.maximum(cumulative_mask, new_areas)
+        cumulative_mask[exclusion_mask_bool] = 0
         # cumulative_mask = cv2.erode(cumulative_mask, np.ones((5,5), np.uint8), iterations=1)  # erode to keep only consistent areas
 
         cumulative_masks[idx] = cumulative_mask.copy()
@@ -340,23 +331,17 @@ for file in all_files:
 
         cone_masks[idx] = (cone_mask_f * 255).astype(np.uint8) # for diagnostics, to be removed later
 
-        freehand = freehand_mask_f  # already 0.0 or 1.0
-
         # --- Cone mask normalized ---
         cone = cone_mask_f  # already 0.0 or 1.0
-
-        # Replace empty freehand (no drawing) with ones so it doesn't zero-out the product
-        if np.count_nonzero(freehand) == 0:
-            freehand = np.ones_like(freehand, dtype=np.float32)
 
         # --- Combine: product (agreement) ---
         comp_int = (intensity_n + eps) ** norm_intensity
         comp_motion = (mag_n + eps) ** norm_magnitude
-        comp_free = (freehand + eps) ** norm_freehand
         comp_cone = (cone + eps) ** norm_cone
 
         # Assume components are already in [0,1]; combine as joint probability
-        combined_score = comp_int * comp_motion * comp_free * comp_cone
+        combined_score = comp_int * comp_motion * comp_cone
+        combined_score[exclusion_mask_bool] = 0
         # Optional: Normalize to [0,1] 
         combined_score = combined_score / np.max(combined_score) if np.max(combined_score) > 0 else combined_score
 
@@ -376,9 +361,7 @@ for file in all_files:
             threshold_mask = (combined_score >= 0.8 * peak).astype(np.uint8) * 255
 
         combined_score = cv2.GaussianBlur(combined_score, (5,5), 0) # move before thresholding?
-
-        # Exclude background areas
-        threshold_mask[background_mask == 0] = 0
+        threshold_mask[exclusion_mask_bool] = 0
 
         # OPTIONAL morphological cleanup to remove noise
         # kernel = np.ones((5,5), np.uint8)
@@ -391,14 +374,14 @@ for file in all_files:
             final_mask = fill_holes_in_mask(threshold_mask)
             # Keep only largest blob, connects multiple disjoint regions if present, horizontal threshold determines how far apart blobs can be to be considered connected
             final_mask = keep_largest_blob(final_mask, horizontal_threshold=50, spray_origin=spray_origin) 
-            final_cluster_masks[idx] = final_mask
         else:
             # --- Clustering to get final clean outline ---
             # CURRENTLY BUGGED, small cluster distance makes cluster way too small. Does not detect properly. 
             # Cluster distance determines how close points have to be to be considered part of the same cluster, higher = larger clusters
             # Alpha determines concaveness of the hull, higher = more convex, infinity would be full convex, lower = more concave, too low = holes
             final_mask = create_cluster_mask(threshold_mask, cluster_distance=20, alpha=30) 
-            final_cluster_masks[idx] = final_mask
+        final_mask[exclusion_mask_bool] = 0
+        final_cluster_masks[idx] = final_mask
 
         # Convert spray_origin from (x, y) to (row, col) format for analyze_boundary
         # Prepare a clean binary mask for boundary extraction
@@ -452,7 +435,7 @@ for file in all_files:
     # Calculate nozzle closing time
     nozzle_closing_time = vpf.calculate_closing_point(close_point_distance, penetration, intensity_values, spray_area)
 
-    print(f"Final masks computed with w_intensity={w_intensity}, w_magnitude={w_magnitude}, w_freehand={w_freehand}, w_cone={w_cone}, intensity_gamma={intensity_gamma}, use_cumulative_as_mask={use_cumulative_as_mask}, dynamic thresholding (Otsu if cumulative mask or intensity-only, else 95th percentile)")
+    print(f"Final masks computed with w_intensity={w_intensity}, w_magnitude={w_magnitude}, w_cone={w_cone}, intensity_gamma={intensity_gamma}, use_cumulative_as_mask={use_cumulative_as_mask}, dynamic thresholding (Otsu if cumulative mask or intensity-only, else 95th percentile)")
 
     # Prepare results output paths
     results_dir = os.path.join(os.getcwd(), 'Results')
@@ -523,7 +506,7 @@ for file in all_files:
         mag_disp = ensure_bgr(resize((mag_scores[i] * 255).astype(np.uint8)))
         cumulative_disp = ensure_bgr(resize(cumulative_masks[i]))
         cone_disp = ensure_bgr(resize(cone))
-        freehand_disp = ensure_bgr(resize((freehand_mask_f * 255).astype(np.uint8)))
+        exclusion_disp = ensure_bgr(resize(exclusion_mask))
         overlay_disp = ensure_bgr(resize(overlay))
 
         # Add labels to each image
@@ -537,7 +520,7 @@ for file in all_files:
         cv2.putText(mag_disp, "Optical Flow Magnitude", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,0), 4)
         cv2.putText(cumulative_disp, "Cumulative Mask", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,0), 4)
         cv2.putText(cone_disp, "Cone Mask", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,0), 4)
-        cv2.putText(freehand_disp, "Freehand Mask", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,0), 4)
+        cv2.putText(exclusion_disp, "Excluded Areas", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,0), 4)
         cv2.putText(overlay_disp, "Overlay", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,0), 4)
 
         # Draw yellow text on top (thinner)
@@ -548,13 +531,13 @@ for file in all_files:
         cv2.putText(mag_disp, "Optical Flow Magnitude", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, text_color, 2)
         cv2.putText(cumulative_disp, "Cumulative Mask", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, text_color, 2)
         cv2.putText(cone_disp, "Cone Mask", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, text_color, 2)
-        cv2.putText(freehand_disp, "Freehand Mask", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, text_color, 2)
+        cv2.putText(exclusion_disp, "Excluded Areas", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, text_color, 2)
         cv2.putText(overlay_disp, "Overlay", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, text_color, 2)
 
         # Now stack and show as before
         row1 = np.hstack([frame_disp, combined_disp, cluster_disp])
         row2 = np.hstack([intensity_disp, mag_disp, cumulative_disp])
-        row3 = np.hstack([cone_disp, freehand_disp, overlay_disp])
+        row3 = np.hstack([cone_disp, exclusion_disp, overlay_disp])
         grid = np.vstack([row1, row2, row3])
 
         cv2.imshow('All Results', grid)

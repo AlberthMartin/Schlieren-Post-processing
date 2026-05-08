@@ -15,8 +15,8 @@ pipeline:
 6. select or reuse spray origin;
 7. crop a strip around the spray;
 8. apply CLAHE;
-9. build background, freehand, cone, intensity, and motion masks;
-10. combine masks into a weighted spray score;
+9. build manual exclusion, cone, intensity, and motion masks;
+10. combine scoring masks into a weighted spray score;
 11. threshold and clean the score into a final binary mask;
 12. calculate penetration, cone angles, area, intensity, and timing metrics;
 13. display diagnostics;
@@ -49,8 +49,6 @@ Functions used directly by `main_weighted.py`:
   symmetric horizontal band around the origin row.
 - `applyCLAHE(video, clipLimit=2.0, tileGridSize=(8,8))`: applies CLAHE to every
   frame in place.
-- `createBackgroundMask(first_frame, threshold=10)`: builds a binary mask from
-  bright enough pixels.
 - `calculate_opening_point(cone_mask_f, mag)`: detects sustained motion near the
   origin.
 - `calculate_closing_point(close_point_distance, penetration, intensity_values,
@@ -113,8 +111,10 @@ OpenCV/Tkinter interaction helpers.
 
 - `set_spray_origin(...)`: reuses or collects the nozzle/spray origin and saves
   it in `spray_origins.json`.
-- `draw_freehand_mask(video_strip)`: lets a user draw `mask.png`. This helper is
-  available but not currently called by `main_weighted.py`.
+- `get_freehand_exclusion_mask(video_strip, mask_path="mask.png")`: asks whether
+  to reuse, edit, create, or skip the saved exclusion mask.
+- `draw_freehand_mask(video_strip, ...)`: lets a user draw `mask.png` as a
+  hard exclusion mask.
 - `draw_and_compare_mask_frames(...)`: lets a user draw a validation mask on one
   frame and calculates Dice, precision, recall, and pixel accuracy.
 
@@ -156,8 +156,8 @@ plotting metrics from an output CSV.
 
 ## `mask.png`
 
-Freehand binary prior mask. It is not Python code, but it affects
-`main_weighted.py` if present.
+Freehand binary exclusion mask. White pixels are blocked from
+`main_weighted.py` scoring and final masks.
 
 ## `spray_origins.json`
 
@@ -173,4 +173,3 @@ from Legacy.std_functions3 import *
 ```
 
 The imported names are not used by the current default code path.
-

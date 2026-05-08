@@ -43,7 +43,6 @@ Nominal values:
 ```python
 w_intensity = 0.4
 w_magnitude = 0.8
-w_freehand = 0.1
 w_cone = 0.6
 intensity_gamma = 3.0
 ```
@@ -129,13 +128,12 @@ region.
 
 Check:
 
-- `createBackgroundMask(first_frame, threshold=20)`
-- `background_mask` display window
+- `mask.png` freehand exclusion mask
 - `cone_angle_deg` and `falloff_angle`
-- `mask.png`
 
-The background mask is a hard exclusion mask. If useful spray pixels are black
-in that display, they cannot be recovered later.
+The freehand mask is a hard exclusion mask. White pixels in `mask.png` are
+removed from scoring and from the cleaned final mask. If useful spray pixels are
+white in the mask, they cannot be recovered later.
 
 ### Spray is under-detected
 
@@ -145,7 +143,7 @@ Try:
 - increase `cone_angle_deg`;
 - reduce `mag_clip`;
 - disable `use_cumulative_as_mask` to allow direct optical-flow contribution;
-- create or update `mask.png` so the freehand prior covers the true region.
+- remove useful spray pixels from `mask.png` if they are accidentally excluded.
 
 ### Spray is over-detected
 
@@ -155,7 +153,7 @@ Try:
 - narrow `cone_angle_deg` or reduce `falloff_angle`;
 - increase `mag_clip`;
 - lower `horizontal_threshold` in `keep_largest_blob`;
-- improve `mask.png` or remove it if it is too broad.
+- draw or update `mask.png` so recurring false-positive regions are excluded.
 
 ### Opening time triggers too early
 
@@ -174,7 +172,8 @@ requiring more pixels to pass the threshold.
 - Output metrics are in pixels and frames. There is no physical calibration.
 - `spray_origins.json` uses exact file paths as keys, so saved origins are not
   portable across machines or moved folders without editing the JSON.
-- `mask.png` is global for the working directory, not per-video.
+- `mask.png` is global for the working directory, not per-video. The script asks
+  whether to reuse, edit, or skip it for each processed file.
 - Validation PNGs are written to the repository root, while CSV/MP4 outputs are
   written under `Results/`.
 - If the diagnostic display loop is quit early, the overlay video is only written
@@ -186,4 +185,3 @@ requiring more pixels to pass the threshold.
 - `data_capture.py`, `histogram.py`, `extrapolation.py`, and much of
   `videoProcessingFunctions.py` contain useful experimental or alternative
   helpers that are not part of the current default main path.
-

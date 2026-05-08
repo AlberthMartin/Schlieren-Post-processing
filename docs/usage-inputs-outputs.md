@@ -51,15 +51,17 @@ again.
 
 ### `mask.png`
 
-`main_weighted.py` tries to load `mask.png` from the current working directory.
-It is treated as a single-channel binary freehand mask and resized to the current
-strip dimensions if necessary.
+`main_weighted.py` can reuse or create `mask.png` in the current working
+directory. It is treated as a single-channel binary freehand exclusion mask and
+resized to the current strip dimensions if necessary.
 
-If `mask.png` is missing, the pipeline continues. An empty freehand mask is
-treated as neutral during combination.
+White pixels mean "exclude this area from processing." Excluded pixels are
+removed from intensity scoring, optical-flow/cumulative masks, threshold masks,
+and final cleaned masks.
 
-`GUI_functions.draw_freehand_mask(video_strip)` can create `mask.png`, but the
-current main script does not call that helper automatically.
+If `mask.png` exists, the script asks whether to reuse it, draw/edit one and
+save it, or continue without an exclusion mask. If it is missing, the script asks
+whether to draw one.
 
 ## Runtime Windows
 
@@ -78,9 +80,19 @@ Controls:
 - right arrow: next frame
 - `q`: quit selection and use fallback origin
 
-### Background Mask Window
+### Freehand Exclusion Mask Prompt
 
-Shows the threshold-derived background mask and waits for any key.
+Shown after cropping and contrast enhancement. If a saved `mask.png` exists,
+you can reuse it for the current file, draw/edit and save a mask, or skip the
+exclusion mask for this file.
+
+Drawing controls:
+
+- left drag: draw a filled excluded region
+- left arrow: previous frame
+- right arrow: next frame
+- `r`: reset the exclusion mask
+- `q` or `s`: save and finish
 
 ### Diagnostic Results Window
 
@@ -157,4 +169,3 @@ The script currently reports image-space units:
 
 No calibration from pixels to physical units or frames to time is applied in the
 current pipeline.
-

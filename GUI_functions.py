@@ -57,7 +57,18 @@ def set_spray_origin(file, rotated_video, firstFrameNumber, nframes, height):
 
     return spray_origin
 
-def draw_freehand_mask(video_strip):
+def _resize_binary_mask(mask, width, height):
+    import cv2
+    import numpy as np
+
+    if mask is None:
+        return np.zeros((height, width), dtype=np.uint8)
+    if mask.shape != (height, width):
+        mask = cv2.resize(mask, (width, height), interpolation=cv2.INTER_NEAREST)
+    return ((mask > 0).astype(np.uint8) * 255)
+
+
+def draw_freehand_mask(video_strip, mask_path="mask.png", initial_mask=None):
     import cv2
     import numpy as np
 
@@ -65,6 +76,7 @@ def draw_freehand_mask(video_strip):
     
     drawing = False
     points = []
+    frame_index = nframes // 2
 
     def draw_mask(event, x, y, flags, param):
         nonlocal drawing, points, mask
@@ -86,34 +98,84 @@ def draw_freehand_mask(video_strip):
 
             points = []
 
-    frame = video_strip[nframes // 2]
+    mask = _resize_binary_mask(initial_mask, width, height)
 
-    mask = np.zeros(frame.shape[:2], dtype=np.uint8)
-
-    cv2.namedWindow("Draw Mask")
-    cv2.setMouseCallback("Draw Mask", draw_mask)
+    window_name = "Draw Exclusion Mask"
+    cv2.namedWindow(window_name)
+    cv2.setMouseCallback(window_name, draw_mask)
 
     while True:
+        frame = video_strip[frame_index]
+
         # Ensure overlay is 3-channel BGR (frame may be grayscale)
         if frame.ndim == 2 or (frame.ndim == 3 and frame.shape[2] == 1):
             overlay = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
         else:
             overlay = frame.copy()
 
-        # Apply red overlay safely (works even if mask has no 255 pixels)
+        # Apply red overlay safely (works even if mask has no 255 pixels).
         mask_bool3 = (mask == 255)[:, :, None]
-        overlay = np.where(mask_bool3, np.array([0, 0, 255], dtype=overlay.dtype), overlay)
+        red_layer = overlay.copy()
+        red_layer[mask == 255] = [0, 0, 255]
+        overlay = np.where(mask_bool3, cv2.addWeighted(red_layer, 0.55, overlay, 0.45, 0), overlay)
 
-        cv2.imshow("Draw Mask", overlay)
+        cv2.putText(overlay, f"Excluded areas | Frame {frame_index}/{nframes - 1}", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        cv2.putText(overlay, "Drag: draw filled area | Left/Right: frame | r: reset | q/s: save", (10, 62),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
-        key = cv2.waitKey(40) & 0xFF
+        cv2.imshow(window_name, overlay)
+
+        key = cv2.waitKeyEx(40)
         if key == ord('q'):
+            break
+        elif key == ord('s'):
             break
         elif key == ord('r'):  # reset mask
             mask[:] = 0
+        elif key == 2424832:  # left arrow
+            frame_index = max(0, frame_index - 1)
+        elif key == 2555904:  # right arrow
+            frame_index = min(nframes - 1, frame_index + 1)
 
-    cv2.destroyAllWindows()
-    cv2.imwrite("mask.png", mask)
+    cv2.destroyWindow(window_name)
+    cv2.imwrite(mask_path, mask)
+    return mask
+
+
+def get_freehand_exclusion_mask(video_strip, mask_path="mask.png"):
+    import cv2
+    import os
+    import tkinter.messagebox as messagebox
+    import numpy as np
+
+    _, height, width = video_strip.shape[:3]
+    empty_mask = np.zeros((height, width), dtype=np.uint8)
+
+    if os.path.exists(mask_path):
+        saved_mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+        saved_mask = _resize_binary_mask(saved_mask, width, height)
+        choice = messagebox.askyesnocancel(
+            "Freehand exclusion mask",
+            f"Found saved exclusion mask:\n{mask_path}\n\n"
+            "Yes: reuse it for this file\n"
+            "No: draw/edit a mask and save it (press r to start blank)\n"
+            "Cancel: continue without an exclusion mask",
+        )
+        if choice is True:
+            return saved_mask
+        if choice is False:
+            return draw_freehand_mask(video_strip, mask_path=mask_path, initial_mask=saved_mask)
+        return empty_mask
+
+    create_mask = messagebox.askyesno(
+        "Freehand exclusion mask",
+        "No saved exclusion mask was found.\n\n"
+        "Draw one now and save it as mask.png?",
+    )
+    if create_mask:
+        return draw_freehand_mask(video_strip, mask_path=mask_path)
+    return empty_mask
 
 
 def draw_and_compare_mask_frames(original_video, predicted_masks, start_frame=0, save_prefix="validation"):
