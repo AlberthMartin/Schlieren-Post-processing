@@ -5,6 +5,8 @@ This repository contains scripts for processing spray and schlieren videos, extr
 ## What is in here
 
 - `main_weighted.py`: Primary entry point that runs the weighted analysis pipeline.
+- `docs/`: Detailed documentation for the current `main_weighted.py` workflow,
+  inputs, outputs, modules, tuning parameters, and caveats.
 - `opticalFlow.py`: Optical flow computations used for motion/velocity estimates.
 - `videoProcessingFunctions.py`: Core video processing helpers used across scripts.
 - `functions_videos.py` and `GUI_functions.py`: Utility functions and UI helpers.
@@ -28,6 +30,8 @@ Run the main pipeline:
 ```
 python main_weighted.py
 ```
+
+For a detailed walkthrough of how this works, see [`docs/README.md`](docs/README.md).
 
 ## Outputs
 
